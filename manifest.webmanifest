@@ -1,8 +1,8 @@
 {
-  "name": "Ginger Card Studio",
-  "short_name": "Ginger",
+  "name": "Cardcraft",
+  "short_name": "Cardcraft",
   "description": "Character card editor — import, edit, and export AI roleplay character cards on your phone.",
-  "id": "/ginger-card-studio/",
+  "id": "/cardcraft/",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",

@@ -1,9 +1,9 @@
-# Ginger Card Studio
+# Cardcraft
 
 A mobile-first character card editor that runs entirely in the browser. One HTML file, no
 build step, no server.
 
-**[Open it →](https://macegac.github.io/ginger-card-studio/)**
+**[Open it →](https://macegac.github.io/cardcraft/)**
 
 ## What it does
 
@@ -17,7 +17,8 @@ build step, no server.
   recipe stack. It's shown read-only with the values you set, and preserved byte-for-byte
   on export.
 - **AI assist** via OpenRouter — build a whole card from a one-line concept, or
-  rewrite / expand / condense / fix any field. Every change is previewed against the
+  rewrite / expand / condense / fix any field, or Smart edit: name a trait to add or take
+  out and the model proposes small edits across the whole card. Every change is previewed against the
   current text and applied only when you accept it.
 - **Undo / redo**, 80 steps. Typing coalesces into single steps.
 - **Revert** any field to the value the card was imported with.
@@ -25,8 +26,8 @@ build step, no server.
 
 ## Your data
 
-Cards live in your browser's IndexedDB and never leave the device — except the single
-field you send when you press an AI button. There is no backend.
+Cards live in your browser's IndexedDB and never leave the device — except the card
+text you send to OpenRouter when you press an AI button. There is no backend.
 
 Your OpenRouter key is stored in `localStorage` on your device only. It is never part of
 the page source. Use a credit-limited key.
@@ -36,7 +37,7 @@ treat the library as a working set and export anything you want to keep.
 
 ## Diagnostics
 
-[`probe.html`](https://macegac.github.io/ginger-card-studio/probe.html) checks whether a
+[`probe.html`](https://macegac.github.io/cardcraft/probe.html) checks whether a
 given device supports what the app needs — chiefly `DecompressionStream`, which is
 required to read Ginger's compressed recipe chunk (Safari 16.4+).
 

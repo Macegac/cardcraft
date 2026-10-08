@@ -1,12 +1,12 @@
 <meta charset="utf-8">
-<title>Ginger Card Studio</title>
+<title>Cardcraft</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <link rel="manifest" href="manifest.webmanifest">
 <meta name="theme-color" content="#131614">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Ginger">
+<meta name="apple-mobile-web-app-title" content="Cardcraft">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="icon-192.png" type="image/png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -299,6 +299,19 @@ textarea.editor{
 }
 .diffbox.new{border-left:3px solid var(--ok)}
 .diffbox .txt{font-size:.87rem;white-space:pre-wrap;word-break:break-word;max-height:34vh;overflow-y:auto}
+.diffbox.old{border-left:3px solid var(--danger)}
+
+/* ---------- smart edit review ---------- */
+.smartrow{display:flex;gap:10px;padding:11px 0;border-bottom:1px solid var(--rule-soft)}
+.smartrow:last-child{border-bottom:0}
+.smartrow input[type=checkbox]{width:19px;height:19px;flex:none;accent-color:var(--accent);margin-top:1px}
+.smartrow .sb{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
+.smartrow .sn{font-size:.83rem;font-weight:600}
+.smartrow .sw{font-size:.78rem;color:var(--ink-dim)}
+.smartrow .diffbox{padding:8px 10px}
+.smartrow .diffbox .txt{font-size:.82rem;max-height:24vh}
+.smartrow.off{opacity:.55}
+.smartrow.off .sw{color:var(--danger)}
 .sheetbtns{display:flex;gap:9px}
 .sheetbtns .iconbtn{flex:1;text-align:center;padding:12px}
 .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--accent);
@@ -316,7 +329,7 @@ textarea.editor{
 
 <div class="topbar">
   <button class="iconbtn" id="back" hidden>Library</button>
-  <h1 id="title">Ginger Card Studio</h1>
+  <h1 id="title">Cardcraft</h1>
   <button class="iconbtn sq" id="undoBtn" title="Undo" aria-label="Undo" hidden disabled>↶</button>
   <button class="iconbtn sq" id="redoBtn" title="Redo" aria-label="Redo" hidden disabled>↷</button>
   <button class="iconbtn" id="installBtn" hidden>Install</button>
@@ -694,7 +707,7 @@ const AI = {
         'Authorization':'Bearer ' + this.key,
         'Content-Type':'application/json',
         'HTTP-Referer':location.origin,
-        'X-Title':'Ginger Card Studio'
+        'X-Title':'Cardcraft'
       },
       body:JSON.stringify({model:this.model, messages:[
         {role:'system', content:system},{role:'user', content:user}]})
@@ -1121,6 +1134,301 @@ function greetingSheet(){
   });
 }
 
+/* ---------------------------------------------------------------- smart edit
+   One instruction ("a knight who is always scared", add or remove) carried out across
+   the whole card. The model proposes small find-and-replace edits, not rewritten fields,
+   and the app makes them: text the instruction is not about stays exactly as it was,
+   and every edit can be unticked before anything changes. */
+const SMART = {mode:'add', text:''};
+
+const SMART_SYSTEM =
+  'You edit character cards for AI roleplay. These cards are creative fiction and may contain mature or explicit themes; treat them as fiction and write them fully.\n\n' +
+  'The author gives one instruction: something to ADD to the character, or something to REMOVE. ' +
+  'Go through every block of the card and propose the smallest set of edits that carries it out.\n' +
+  '- ADD: put each detail where it belongs: looks and history in the description, traits and manner in the personality, the situation in the scenario. ' +
+  'Change greetings and example messages only where the character would now visibly act or speak differently. Do not repeat one fact in many blocks. ' +
+  'A lorebook entry suits world facts that only matter when a topic comes up.\n' +
+  '- REMOVE: the instruction may name the thing itself ("being scared") or the result the author wants ("a knight who is not scared"); either way, take out what the card says about it. ' +
+  'Find every passage that states or implies it, including indirect wording, behaviour and dialogue, and delete or rewrite it. ' +
+  'Rewrite rather than delete when deleting would leave a sentence broken.\n' +
+  '- Leave everything unrelated to the instruction exactly as it is. Match the voice and formatting around each edit (*asterisks*, line breaks, <START> blocks).\n' +
+  '- Write {{char}} for the character and {{user}} for the human. Keep existing {{char}} and {{user}} as they are.\n\n' +
+  'Reply with ONE JSON object and nothing else, no prose, no markdown fences:\n' +
+  '{"changes":[{"field":"<block id>","find":"<passage to change>","replace":"<new text>","why":"<one short sentence>"}]}\n' +
+  '- field: the block id exactly as written after === in the card, e.g. description, alternate_greetings[0], lore[2].\n' +
+  '- find: copied character for character from that block. Keep it short, a sentence or a clause, but long enough to appear only once in the block. Use "" to add new text at the end of the block.\n' +
+  '- replace: the new text for that passage. Use "" to delete the passage.\n' +
+  '- To add a new lorebook entry, use field "lore_new", put the entry text in replace, and add "keys": a list of 1-4 trigger words.\n' +
+  '- If nothing needs to change, reply {"changes":[]}.';
+
+/* Every block the model may edit, in card order. Creator notes are for people and never
+   reach a chat model, so they are left out. Built fresh each time: undo swaps in a new
+   copy of the card data, and a target must point at the copy that is live now. */
+function smartTargets(rec){
+  const d = rec.data, out = [];
+  for(const [k, lbl] of TEXT_FIELDS){
+    if(k === 'creator_notes') continue;
+    out.push({id:k, label:lbl, get:() => d[k] || '', set:v => { d[k] = v; }});
+  }
+  (d.alternate_greetings || []).forEach((g, i) => out.push({
+    id:'alternate_greetings[' + i + ']', label:'Greeting ' + (i + 1),
+    get:() => d.alternate_greetings[i] || '', set:v => { d.alternate_greetings[i] = v; }}));
+  ((d.character_book && d.character_book.entries) || []).forEach((e, i) => out.push({
+    id:'lore[' + i + ']', label:'Lore entry ' + (i + 1), keys:e.keys || e.key || [],
+    get:() => e.content || '', set:v => { e.content = v; }}));
+  return out;
+}
+
+/* Collapses runs of whitespace and straightens curly quotes, keeping where each
+   character came from, so a passage the model copied loosely can still be found. */
+function smartNorm(s){
+  const out = [], at = [];
+  let space = false;
+  for(let i = 0; i < s.length; i++){
+    let c = s[i];
+    if(/\s/.test(c)){ if(space) continue; c = ' '; space = true; }
+    else{
+      space = false;
+      if(c === '‘' || c === '’') c = "'";
+      else if(c === '“' || c === '”') c = '"';
+    }
+    out.push(c); at.push(i);
+  }
+  return {text:out.join(''), at};
+}
+
+function smartLocate(text, find){
+  if(!find) return null;
+  const i = text.indexOf(find);
+  if(i !== -1) return [i, i + find.length];
+  const T = smartNorm(text), F = smartNorm(find.trim());
+  if(!F.text) return null;
+  const j = T.text.indexOf(F.text);
+  if(j === -1) return null;
+  return [T.at[j], T.at[j + F.text.length - 1] + 1];
+}
+
+/* The field's new text with one edit made, or null when its passage is not there. */
+function smartApply(text, ch){
+  if(!ch.find){
+    const add = ch.replace.trim();
+    return text.trim() ? text.replace(/\s+$/, '') + '\n\n' + add : add;
+  }
+  const at = smartLocate(text, ch.find);
+  if(!at) return null;
+  const before = text.slice(0, at[0]), after = text.slice(at[1]);
+  if(ch.replace) return before + ch.replace + after;
+  // A deleted sentence leaves the spaces or line breaks either side of it doubled.
+  const b = before.replace(/[ \t]+$/, ''), a = after.replace(/^[ \t]+/, '');
+  if(!b) return a.replace(/^\n+/, '');
+  if(!a) return b.replace(/\n+$/, '');
+  if(/\n$/.test(b) && /^\n/.test(a)) return b + a.replace(/^\n+/, '');
+  if(/\n$/.test(b) || /^\n/.test(a)) return b + a;
+  return b + ' ' + a;
+}
+
+async function smartEditAsk(rec, mode, instruction){
+  const targets = smartTargets(rec);
+  const card = targets.map(t =>
+    '=== ' + t.id + (t.keys && t.keys.length ? ' (keys: ' + t.keys.join(', ') + ')' : '') + ' ===\n' +
+    (t.get().trim() || '(empty)')).join('\n\n');
+  const user =
+    (mode === 'add' ? 'ADD to the character: ' : 'REMOVE from the character: ') + instruction +
+    '\n\nCharacter name: ' + (rec.data.name || '(none)') +
+    '\n\nThe card, one block per field:\n\n' + card;
+
+  const raw = await AI.complete(SMART_SYSTEM, user);
+  let txt = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  const a = txt.indexOf('{'), b = txt.lastIndexOf('}');
+  if(a === -1 || b <= a) throw new Error('The model did not return JSON. Try again, or pick a different model.');
+  let obj;
+  try{ obj = JSON.parse(txt.slice(a, b + 1)); }
+  catch(e){ throw new Error('The model returned malformed JSON. Try again, or pick a different model.'); }
+
+  const byId = {}, order = {};
+  targets.forEach((t, i) => { byId[t.id] = t; order[t.id] = i; });
+  const str = v => typeof v === 'string' ? v : '';
+  return (Array.isArray(obj.changes) ? obj.changes : []).map(c => {
+    c = c || {};
+    const ch = {field:str(c.field).trim(), find:str(c.find), replace:str(c.replace), why:str(c.why).trim()};
+    if(ch.find.trim() === '(empty)') ch.find = '';
+    if(ch.field === 'lore_new'){
+      const k = c.keys;
+      ch.keys = (Array.isArray(k) ? k.map(String) : typeof k === 'string' ? k.split(',') : [])
+        .map(s => s.trim()).filter(Boolean);
+      ch.label = 'New lore entry';
+      ch.ok = !!ch.replace.trim();
+      if(!ch.ok) ch.reason = 'The entry came back empty, so it is skipped.';
+      return ch;
+    }
+    const t = byId[ch.field];
+    ch.label = t ? t.label : (ch.field || 'Unknown field');
+    ch.ok = !!t && smartApply(t.get(), ch) !== null;
+    if(!t) ch.reason = 'That field is not on this card, so it is skipped.';
+    else if(!ch.ok) ch.reason = 'Could not find this passage in the field, so it is skipped.';
+    return ch;
+  }).filter(ch => ch.find !== ch.replace)
+    .sort((x, y) => (x.field in order ? order[x.field] : 1e9) - (y.field in order ? order[y.field] : 1e9));
+}
+
+function smartEditSheet(){
+  const rec = CURRENT;
+  openSheet(sh => {
+    sh.appendChild(el('h3', null, 'Smart edit'));
+    sh.appendChild(el('p','desc',
+      'Name something to add to the character or take out. The model reads the whole card, ' +
+      'greetings and lorebook included, and proposes small edits. You pick which ones to keep.'));
+
+    const seg = el('div','seg');
+    const segBtns = {};
+    for(const [id, lbl] of [['add','Add'], ['remove','Remove']]){
+      const b = el('button','segbtn', lbl);
+      b.style.flex = '1'; b.style.padding = '10px';
+      b.onclick = () => { SMART.mode = id; paint(); };
+      segBtns[id] = b;
+      seg.appendChild(b);
+    }
+    sh.appendChild(seg);
+
+    const f = el('div','field');
+    const ta = el('textarea');
+    ta.rows = 3; ta.spellcheck = true;
+    ta.value = SMART.text;
+    ta.oninput = () => { SMART.text = ta.value; };
+    f.appendChild(ta);
+    const hint = el('div','tok wrap', 'Sends the whole card to ' + AI.model + '.');
+    f.appendChild(hint);
+    sh.appendChild(f);
+
+    const paint = () => {
+      for(const id in segBtns) segBtns[id].setAttribute('aria-pressed', String(SMART.mode === id));
+      ta.placeholder = SMART.mode === 'add'
+        ? 'A knight who is always scared'
+        : 'Being scared, or: a knight who is not scared';
+    };
+    paint();
+
+    const btns = el('div','sheetbtns');
+    const cancel = el('button','iconbtn','Cancel'); cancel.onclick = closeSheet;
+    const go = el('button','iconbtn primary','Find edits');
+    go.onclick = async () => {
+      const text = ta.value.trim();
+      if(!text){ toast('Say what to ' + (SMART.mode === 'add' ? 'add' : 'remove') + ' first'); return; }
+      SMART.text = text;
+      go.disabled = true; cancel.disabled = true;
+      go.innerHTML = '<span class="spin"></span> Reading the card…';
+      try{
+        const changes = await smartEditAsk(rec, SMART.mode, text);
+        smartReviewSheet(SMART.mode, text, changes);
+      }catch(e){
+        go.disabled = false; cancel.disabled = false; go.textContent = 'Find edits';
+        const err = el('div','note'); err.style.borderLeftColor = 'var(--danger)';
+        err.textContent = e.message;
+        sh.insertBefore(err, btns);
+      }
+    };
+    btns.appendChild(cancel); btns.appendChild(go);
+    sh.appendChild(btns);
+    setTimeout(() => ta.focus(), 60);
+  });
+}
+
+function smartReviewSheet(mode, instruction, changes){
+  const rec = CURRENT;
+  openSheet(sh => {
+    sh.classList.add('tall');
+    sh.appendChild(el('h3', null, (mode === 'add' ? 'Add: ' : 'Remove: ') + instruction));
+
+    const btns = el('div','sheetbtns');
+    const back = el('button','iconbtn','Back');
+    back.onclick = smartEditSheet;
+    const again = el('button','iconbtn','Try again');
+    again.onclick = async () => {
+      again.disabled = true; back.disabled = true;
+      again.innerHTML = '<span class="spin"></span>';
+      try{ smartReviewSheet(mode, instruction, await smartEditAsk(rec, mode, instruction)); }
+      catch(e){ again.disabled = false; back.disabled = false; again.textContent = 'Try again'; toast(e.message, 4200); }
+    };
+
+    if(!changes.length){
+      sh.appendChild(el('p','desc', 'The model found nothing on the card to change for that.'));
+      btns.appendChild(back); btns.appendChild(again);
+      sh.appendChild(btns);
+      return;
+    }
+    sh.appendChild(el('p','desc',
+      'Ticked edits get made. Untick any you do not want. Everything else on the card stays as it is.'));
+
+    const boxes = [];
+    const list = el('div','field');
+    const yes = el('button','iconbtn primary');
+    const count = () => {
+      const n = boxes.filter(b => b.checked).length;
+      yes.textContent = 'Apply ' + n;
+      yes.disabled = !n;
+    };
+    changes.forEach(ch => {
+      const row = el('div','smartrow' + (ch.ok ? '' : ' off'));
+      const cb = el('input'); cb.type = 'checkbox';
+      cb.checked = ch.ok; cb.disabled = !ch.ok;
+      cb.onchange = count;
+      boxes.push(cb);
+      row.appendChild(cb);
+      const sb = el('div','sb');
+      const kind = ch.field === 'lore_new' || !ch.find ? 'add' : ch.replace ? 'change' : 'remove';
+      sb.appendChild(el('div','sn', ch.label + ' · ' + kind));
+      if(ch.why || ch.reason) sb.appendChild(el('div','sw', ch.reason || ch.why));
+      if(ch.find){
+        const o = el('div','diffbox old');
+        o.appendChild(el('div','cap', ch.replace ? 'Now' : 'Taken out'));
+        o.appendChild(el('div','txt', ch.find));
+        sb.appendChild(o);
+      }
+      if(ch.replace){
+        const n = el('div','diffbox new');
+        n.appendChild(el('div','cap', ch.field === 'lore_new'
+          ? 'Keys: ' + (ch.keys.join(', ') || 'none') : ch.find ? 'After' : 'Added at the end'));
+        n.appendChild(el('div','txt', ch.replace));
+        sb.appendChild(n);
+      }
+      row.appendChild(sb);
+      list.appendChild(row);
+    });
+    sh.appendChild(list);
+    count();
+
+    yes.onclick = () => {
+      if(Hist.pending) Hist.commit(Hist.pending);
+      const picked = changes.filter((ch, i) => boxes[i].checked);
+      const byId = {};
+      smartTargets(rec).forEach(t => { byId[t.id] = t; });
+      let done = 0, missed = 0;
+      for(const ch of picked){
+        if(ch.field === 'lore_new'){
+          const book = (rec.data.character_book = rec.data.character_book || {name:'', entries:[]});
+          (book.entries = book.entries || []).push(
+            {keys:ch.keys, content:ch.replace.trim(), enabled:true, insertion_order:100});
+          done++;
+          continue;
+        }
+        const t = byId[ch.field];
+        const out = t ? smartApply(t.get(), ch) : null;
+        if(out === null){ missed++; continue; }
+        t.set(out);
+        done++;
+      }
+      if(!done){ toast('None of those could be placed. The card text changed after they were proposed.', 4200); return; }
+      Hist.commit('smart edit');
+      queueSave(); closeSheet(); selectTab(TAB);
+      toast('Made ' + done + ' edit' + (done === 1 ? '' : 's') +
+        (missed ? ', skipped ' + missed + ' whose text an earlier edit had already changed' : '') +
+        ' — undo with ↶', 4200);
+    };
+    btns.appendChild(back); btns.appendChild(again); btns.appendChild(yes);
+    sh.appendChild(btns);
+  });
+}
+
 /* ============================ views ============================ */
 let CURRENT = null;      // open card record
 let TAB = 'card';
@@ -1133,7 +1441,7 @@ function showLibrary(){
   $('tabs').hidden = true; $('back').hidden = true;
   $('undoBtn').hidden = true; $('redoBtn').hidden = true;
   $('newBtn').hidden = false; $('importBtn').hidden = false;
-  $('title').textContent = 'Ginger Card Studio';
+  $('title').textContent = 'Cardcraft';
   setView('library'); renderLibrary();
 }
 function showCard(rec){
@@ -1142,6 +1450,7 @@ function showCard(rec){
   $('undoBtn').hidden = false; $('redoBtn').hidden = false;
   $('newBtn').hidden = true; $('importBtn').hidden = true;
   $('title').textContent = rec.data.name || rec.srcName || 'Untitled';
+  document.querySelector('.tab[data-tab="rec"]').hidden = !rec.gingerXml;
   Hist.reset(rec.data);
   selectTab('card');
 }
@@ -1165,7 +1474,7 @@ function rowMeta(row){
   const bits = [];
   if(row.gingerXml){
     const n = (row.gingerXml.match(/<Recipe /g) || []).length;
-    bits.push(n ? n + ' recipes' : 'ginger');
+    if(n) bits.push(n + ' recipes');
   }
   const lore = row.data && row.data.character_book && row.data.character_book.entries;
   if(lore && lore.length) bits.push(lore.length + ' lore');
@@ -1670,14 +1979,6 @@ function renderCard(){
   mf.appendChild(tg);
   host.appendChild(mf);
 
-  if(rec.gingerXml){
-    const n = (rec.gingerXml.match(/<Recipe /g) || []).length;
-    const w = el('div','note');
-    w.innerHTML = '<b>This card is recipe-driven.</b> ' + n + ' recipes generated the text below. ' +
-      'Editing it here works, but re-generating in Ginger will overwrite your changes. ' +
-      'The recipe data is preserved untouched on export.';
-    host.appendChild(w);
-  }
 
   const gen = el('button','iconbtn primary','✦  Build from a concept');
   gen.style.width = '100%'; gen.style.padding = '13px'; gen.style.marginBottom = '4px';
@@ -1685,6 +1986,12 @@ function renderCard(){
   gen.title = AI.ready ? '' : 'Add an OpenRouter key in Settings';
   gen.onclick = conceptSheet;
   host.appendChild(gen);
+  const smart = el('button','iconbtn','✦  Smart edit: add or remove a trait');
+  smart.style.width = '100%'; smart.style.padding = '13px'; smart.style.margin = '4px 0';
+  smart.disabled = !AI.ready;
+  smart.title = AI.ready ? 'Change one thing about the character across the whole card' : 'Add an OpenRouter key in Settings';
+  smart.onclick = smartEditSheet;
+  host.appendChild(smart);
   if(!AI.ready){
     const h = el('div','tok wrap');
     h.style.margin = '0 0 8px'; h.textContent = 'Add an OpenRouter key in Settings to turn on the AI features.';
@@ -1880,7 +2187,7 @@ function renderRecipes(){
   const host = $('v-rec'); host.innerHTML = '';
   const xml = CURRENT.gingerXml;
   if(!xml){
-    host.appendChild(el('div','empty','This card carries no Ginger recipe data.'));
+    host.appendChild(el('div','empty','This card has no recipe data.'));
     return;
   }
   const doc = new DOMParser().parseFromString(xml, 'application/xml');
@@ -1921,7 +2228,6 @@ function renderRecipes(){
 
   const n = el('div','note');
   n.innerHTML = '<b>Read-only.</b> These are the recipes and the values stored on this card. ' +
-    'Editing them and re-generating the card text needs the Ginger engine, which lands in a later phase. ' +
     'Everything here survives export untouched.';
   host.appendChild(n);
 
@@ -1989,9 +2295,7 @@ function renderExport(){
   host.appendChild(mkBtn('Save JSON (Character Card V2)', () => doExport('json','save')));
 
   const nn = el('div','note');
-  nn.innerHTML = rec.gingerXml
-    ? '<b>Recipe data preserved.</b> The exported PNG keeps this card’s Ginger chunk byte-for-byte, so it still opens as a full recipe card in the desktop app.'
-    : 'Exports as a standard Character Card V2 PNG, readable by SillyTavern and most frontends.';
+  nn.textContent = 'Exports as a standard Character Card V2 PNG, readable by SillyTavern and most frontends.';
   host.appendChild(nn);
 
   host.appendChild(mkBtn('Duplicate this card', async () => {
@@ -2188,11 +2492,9 @@ function settingsSheet(){
     const about = el('div','tok wrap');
     about.style.marginTop = '4px';
     about.textContent =
-      'Ginger Card Studio — a browser card editor for the Ginger character-card format. ' +
-      'Reads and writes Character Card V2/V3 and preserves Ginger recipe data. ' +
-      'Ginger is © DominaeDev, MIT licensed (github.com/DominaeDev/ginger); this is an ' +
-      'independent implementation of its file format, not affiliated with the original. ' +
-      'Cards never leave your device except when you send a field to OpenRouter yourself.';
+      'Cardcraft — a browser character card editor. ' +
+      'Reads and writes Character Card V2/V3. ' +
+      'Cards never leave your device except when you use an AI button, which sends them to OpenRouter.';
     sh.appendChild(about);
 
     const btns = el('div','sheetbtns');
@@ -2320,7 +2622,7 @@ $('installBtn').onclick = async () => {
     openSheet(sh => {
       sh.appendChild(el('h3', null, 'Add to your home screen'));
       sh.appendChild(el('p','desc',
-        'Ginger Card Studio runs as a full app on iOS, offline and without Safari’s toolbars. ' +
+        'Cardcraft runs as a full app on iOS, offline and without Safari’s toolbars. ' +
         'Tap the Share button at the bottom of Safari, then choose “Add to Home Screen”.'));
       const btns = el('div','sheetbtns');
       const ok = el('button','iconbtn primary','Got it');
