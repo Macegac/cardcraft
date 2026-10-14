@@ -1,14 +1,18 @@
 # Cardcraft
 
+> **Retired 2026-10-14.** Building characters moved into
+> [Rolecraft](https://macegac.github.io/rolecraft/)'s Character Workshop. The live site now shows
+> a note pointing there. Cards made in Cardcraft stay in the browser where they were made, and
+> Rolecraft brings them over: Library → Import / Export → Bring Over Cards. The app's code is in
+> this repo's history, up to commit `1dacf34`.
+
 A mobile-first character card editor that runs entirely in the browser. One HTML file, no
 build step, no server.
 
-**[Open it →](https://macegac.github.io/cardcraft/)**
+## What it did
 
-## What it does
-
-- **Import** character cards — Character Card V2/V3 (PNG or JSON), Ginger cards, Agnai,
-  Pygmalion, Text Generation WebUI YAML. Drag-drop or file picker.
+- **Import** character cards — Character Card V2/V3 (PNG or JSON) and Ginger cards. Drag-drop
+  or file picker.
 - **Edit** every card field: description, personality, scenario, first message, example
   messages, system prompt, post-history instructions, creator notes, tags, portrait.
 - **Alternate greetings** with slot reordering.
